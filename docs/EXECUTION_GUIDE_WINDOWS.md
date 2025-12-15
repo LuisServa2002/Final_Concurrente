@@ -63,9 +63,28 @@ Notas:
 - Espere ~3–6 segundos tras arrancar para que los nodos se inicien y se elija un líder.
 - El `--raft-port` es el puerto donde el nodo Raft escucha RPCs; el worker anuncia el puerto worker (p.ej. 9000) como líder para que el cliente pueda redirigir.
 
+**Flujo de Ejecución**
+- **Arranque del nodo:** cada worker crea su `--storage-dir` y el archivo de log, luego inicia el servidor de monitor HTTP, el nodo Raft (elección/heartbeat) y finalmente el servidor TCP que recibe uploads.
+- **Elección de líder:** tras arrancar los Raft peers se realiza la elección (esperar ~3–6 s). El líder anunciará su `worker_port` para redirecciones cliente.
+- **Cliente → Worker (upload):**
+	- El cliente abre conexión TCP al `host:port` del worker y envía una línea JSON con metadatos (ej.: `filename`, `size`, `content_type`, `sha256`, `run_after_commit`, `upload_id`) seguida inmediatamente por el payload de bytes.
+	- Si el worker contactado es un seguidor, responde `{'status':'REDIRECT','leader':[host,port]}`; el cliente debe reintentar contra el leader.
+- **Leader → Consenso (Raft):**
+	- El leader recibe la petición, crea una entrada de log (por ejemplo con `data_b64`) y llama a `raft_node.replicate(entry)`.
+	- El leader envía `AppendEntries` a los peers; cuando una mayoría confirma la replicación, el leader avanza `commit_index`.
+- **Aplicación y respuesta:**
+	- Al aplicarse (commit) la entrada, el leader decodifica los bytes y persiste el fichero en `--storage-dir` (p.ej. `worker_storage_9000/archivo.txt`) y devuelve `{'status':'OK'}` al cliente.
+	- Si `run_after_commit` está activo, el worker lanza `TrainingModule` en background y registra su salida en el log.
+- **Errores / fallos:**
+	- Si la replicación no alcanza mayoría, el leader puede devolver `{'status':'FAIL'}` y registrar el evento.
+	- Si el contenido falla la verificación `sha256`, el worker debe registrar y rechazar el upload.
+- **Operaciones avanzadas:** para archivos grandes usar chunking con metadatos por chunk (`chunk_index`, `chunk_count`, `chunk_sha256`) y reensamblado en el servidor.
+
 Subir un archivo desde el cliente
 ```powershell
 python -m src.client --host 127.0.0.1 --port 9000 put C:\ruta\a\archivo.txt
+python -m src.client --host 127.0.0.1 --port 9000 put C:\Users\luisa\Desktop\UNI\7-CICLO\Concurrente\Laboratorios\Final\archivo.txt
+python -m src.client --host 127.0.0.1 --port 9000 put C:\Users\luisa\Desktop\UNI\7-CICLO\Concurrente\Laboratorios\Final\Fases.png
 ```
 
 Comportamiento esperado:

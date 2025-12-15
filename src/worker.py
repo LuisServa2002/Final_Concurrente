@@ -18,18 +18,20 @@ def log(msg: str):
     now = datetime.utcnow().isoformat()
     line = f"{now} {msg}\n"
     print(line, end='')
+    # ensure parent directory for log exists (defensive)
+    parent = os.path.dirname(LOG_FILE) or '.'
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except Exception:
+        pass
     with open(LOG_FILE, 'a', encoding='utf-8') as f:
         f.write(line)
-STORAGE_DIR = 'worker_storage'
-LOG_FILE = 'worker.log'
 class WorkerTCPHandler(threading.Thread):
     def __init__(self, conn, addr, peers):
         super().__init__(daemon=True)
         self.conn = conn
         self.addr = addr
-    os.makedirs(os.path.dirname(LOG_FILE) or '.', exist_ok=True)
-    with open(LOG_FILE, 'a', encoding='utf-8') as f:
-        f.write(line)
+        self.peers = peers
     def run(self):
         try:
             data = self.conn.recv(4096)
@@ -61,14 +63,13 @@ class WorkerTCPHandler(threading.Thread):
                     with open(path, 'wb') as f:
                         f.write(received)
                     log(f"Committed and stored {path}")
-                        self.conn.sendall(json.dumps({'status': 'OK'}).encode('utf-8'))
-                        # optionally run Java training module asynchronously
-                        try:
-                            if globals().get('RUN_TRAIN'):
-                                # run in background so worker keeps serving
-                                threading.Thread(target=run_java_training, args=(path,), daemon=True).start()
-                        except Exception as e:
-                            log(f"Failed to start training: {e}")
+                    self.conn.sendall(json.dumps({'status': 'OK'}).encode('utf-8'))
+                    # optionally run Java training module asynchronously
+                    try:
+                        if globals().get('RUN_TRAIN'):
+                            threading.Thread(target=run_java_training, args=(path,), daemon=True).start()
+                    except Exception as e:
+                        log(f"Failed to start training: {e}")
                 else:
                     log(f"Replication failed for {fname}")
                     self.conn.sendall(json.dumps({'status': 'FAIL'}).encode('utf-8'))
@@ -151,9 +152,7 @@ def main():
         h, po = p.split(':')
         peers.append((h, int(po)))
 
-    # start monitor in a thread
-    mt = threading.Thread(target=start_monitor, args=(args.host, args.monitor_port), daemon=True)
-    mt.start()
+    # monitor thread will be started after storage/log configuration below
 
     # start raft node (use raft port and peers mapped to raft ports)
     global raft_node
@@ -177,6 +176,13 @@ def main():
         STORAGE_DIR = f'worker_storage_{args.port}'
     # log file inside storage dir
     LOG_FILE = os.path.join(STORAGE_DIR, f'worker_{args.port}.log')
+
+    # ensure storage dir exists before starting monitor/server
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+
+    # now start monitor in a thread (after LOG_FILE is configured)
+    mt = threading.Thread(target=start_monitor, args=(args.host, args.monitor_port), daemon=True)
+    mt.start()
 
     start_tcp_server(args.host, args.port, peers)
 

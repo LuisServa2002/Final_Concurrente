@@ -2,6 +2,15 @@ import threading
 import random
 import os
 import time
+import sys
+from pathlib import Path
+
+# Ensure repository root is on sys.path so `from src...` works when running this script directly
+# repo_root should be the repository root (parent of tools/)
+repo_root = str(Path(__file__).resolve().parent.parent)
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
 from src.client import send_file
 
 
