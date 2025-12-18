@@ -41,3 +41,8 @@ benchmark_files/
 *.temp
 go/worker
 kotlin/worker.jar
+
+# Kotlin
+.gradle/
+kotlin/.gradle/
+
