@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"sync"
 	"time"
 )
+
 
 // Global state
 var (
@@ -90,6 +92,39 @@ func main() {
 	// Initialize RAFT node
 	nodeID := fmt.Sprintf("%s:%d", *host, *port)
 	raftNode = NewRaftNode(nodeID, *host, *raftPort, peers, *port)
+
+	// Set callback to apply committed entries (for .bin file replication)
+	raftNode.SetApplyCallback(func(cmd map[string]interface{}) {
+		action, _ := cmd["action"].(string)
+		
+		// Handle STORE_FILE entries
+		if action == "STORE_FILE" {
+			filename, _ := cmd["filename"].(string)
+			dataB64, _ := cmd["data_b64"].(string)
+			
+			if filename == "" || dataB64 == "" {
+				logMsg("RAFT STORE_FILE: missing filename or data")
+				return
+			}
+			
+			data, err := base64.StdEncoding.DecodeString(dataB64)
+			if err != nil {
+				logMsg("RAFT STORE_FILE: base64 decode error: %v", err)
+				return
+			}
+			
+			path := filepath.Join(modelsDir, filename)
+			if err := os.WriteFile(path, data, 0644); err != nil {
+				logMsg("RAFT STORE_FILE: write error: %v", err)
+				return
+			}
+			
+			logMsg("RAFT applied STORE_FILE: wrote %s (%d bytes)", path, len(data))
+		} else {
+			logMsg("RAFT applied command: %v", cmd)
+		}
+	})
+
 	go raftNode.Start()
 
 	logMsg("Worker started: host=%s, port=%d, raft_port=%d", *host, *port, *raftPort)
@@ -101,6 +136,7 @@ func main() {
 
 	// Start TCP server (blocking)
 	startTCPServer(*host, *port)
+
 }
 
 func logMsg(format string, args ...interface{}) {

@@ -70,6 +70,32 @@ fun main(args: Array<String>) {
 
     // Initialize RAFT
     raftNode = RaftNode("$host:$port", host, raftPort, raftPeers, port)
+    
+    // Set callback to apply committed entries (for .bin file replication)
+    raftNode.applyCallback = { cmd ->
+        val action = cmd["action"] as? String
+        
+        if (action == "STORE_FILE") {
+            val filename = cmd["filename"] as? String
+            val dataB64 = cmd["data_b64"] as? String
+            
+            if (filename.isNullOrEmpty() || dataB64.isNullOrEmpty()) {
+                log("RAFT STORE_FILE: missing filename or data")
+            } else {
+                try {
+                    val data = java.util.Base64.getDecoder().decode(dataB64)
+                    val path = "$modelsDir/$filename"
+                    File(path).writeBytes(data)
+                    log("RAFT applied STORE_FILE: wrote $path (${data.size} bytes)")
+                } catch (e: Exception) {
+                    log("RAFT STORE_FILE error: ${e.message}")
+                }
+            }
+        } else {
+            log("RAFT applied command: $cmd")
+        }
+    }
+    
     thread { raftNode.start() }
 
     log("Worker started: host=$host, port=$port, raft_port=$raftPort")
@@ -81,6 +107,7 @@ fun main(args: Array<String>) {
 
     // Start TCP server (blocking)
     startTcpServer(host, port)
+
 }
 
 fun log(msg: String) {

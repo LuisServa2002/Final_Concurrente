@@ -70,6 +70,9 @@ type RaftNode struct {
 
 	// Configuration
 	heartbeatInterval time.Duration
+
+	// Callback for applying committed entries
+	applyCallback func(map[string]interface{})
 }
 
 // NewRaftNode creates a new RAFT node
@@ -119,6 +122,27 @@ func (rn *RaftNode) GetLeader() *LeaderInfo {
 	rn.mu.RLock()
 	defer rn.mu.RUnlock()
 	return rn.leader
+}
+
+// SetApplyCallback sets the callback function for applying committed entries
+func (rn *RaftNode) SetApplyCallback(fn func(map[string]interface{})) {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.applyCallback = fn
+}
+
+// applyCommitted applies all committed but not yet applied entries
+func (rn *RaftNode) applyCommitted() {
+	for rn.lastApplied < rn.commitIndex {
+		rn.lastApplied++
+		if rn.lastApplied >= 0 && rn.lastApplied < len(rn.log) {
+			entry := rn.log[rn.lastApplied]
+			if rn.applyCallback != nil && entry.Command != nil {
+				// Call outside lock to avoid deadlocks
+				go rn.applyCallback(entry.Command)
+			}
+		}
+	}
 }
 
 // resetElectionTimeout resets the election timer with random timeout
@@ -311,11 +335,13 @@ func (rn *RaftNode) Replicate(command map[string]interface{}) bool {
 
 	if acks >= majority {
 		rn.commitIndex = myIndex
+		rn.applyCommitted()
 		return true
 	}
 
 	return false
 }
+
 
 // ============================================================================
 // RPC Server and Client
@@ -409,6 +435,10 @@ func (rn *RaftNode) handleRequestVote(msg map[string]interface{}) map[string]int
 func (rn *RaftNode) handleAppendEntries(msg map[string]interface{}) map[string]interface{} {
 	term := int(msg["term"].(float64))
 	leaderID := msg["leader_id"]
+	leaderCommit := -1
+	if lc, ok := msg["leader_commit"].(float64); ok {
+		leaderCommit = int(lc)
+	}
 
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
@@ -422,6 +452,33 @@ func (rn *RaftNode) handleAppendEntries(msg map[string]interface{}) map[string]i
 			host, _ := leaderArr[0].(string)
 			port, _ := leaderArr[1].(float64)
 			rn.leader = &LeaderInfo{Host: host, WorkerPort: int(port)}
+		}
+
+		// Append entries if present
+		if entries, ok := msg["entries"].([]interface{}); ok && len(entries) > 0 {
+			for _, e := range entries {
+				if entryMap, ok := e.(map[string]interface{}); ok {
+					entryTerm := 0
+					if t, ok := entryMap["term"].(float64); ok {
+						entryTerm = int(t)
+					}
+					var cmd map[string]interface{}
+					if c, ok := entryMap["command"].(map[string]interface{}); ok {
+						cmd = c
+					}
+					rn.log = append(rn.log, LogEntry{Term: entryTerm, Command: cmd})
+				}
+			}
+		}
+
+		// Update commit index
+		if leaderCommit > rn.commitIndex {
+			if leaderCommit < len(rn.log)-1 {
+				rn.commitIndex = leaderCommit
+			} else {
+				rn.commitIndex = len(rn.log) - 1
+			}
+			rn.applyCommitted()
 		}
 
 		rn.resetElectionTimeout()
@@ -439,6 +496,7 @@ func (rn *RaftNode) handleAppendEntries(msg map[string]interface{}) map[string]i
 		"success": false,
 	}
 }
+
 
 func (rn *RaftNode) sendRPC(host string, port int, msg map[string]interface{}) map[string]interface{} {
 	addr := fmt.Sprintf("%s:%d", host, port)

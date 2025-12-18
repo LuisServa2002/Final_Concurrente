@@ -55,6 +55,22 @@ class RaftNode(
 
     private val heartbeatInterval = 1000L // ms
 
+    // Callback for applying committed entries
+    var applyCallback: ((Map<String, Any?>) -> Unit)? = null
+
+    private fun applyCommitted() {
+        while (lastApplied < commitIndex) {
+            lastApplied++
+            if (lastApplied >= 0 && lastApplied < log.size) {
+                val entry = log[lastApplied]
+                applyCallback?.let { callback ->
+                    // Call outside lock to avoid deadlocks
+                    thread { callback(entry.command) }
+                }
+            }
+        }
+    }
+
     fun start() {
         thread { startRpcServer() }
         resetElectionTimeout()
@@ -195,6 +211,7 @@ class RaftNode(
 
             if (acks >= majority) {
                 commitIndex = myIndex
+                applyCommitted()
                 return true
             }
             return false
@@ -272,6 +289,7 @@ class RaftNode(
     private fun handleAppendEntries(msg: Map<String, Any?>): Map<String, Any?> {
         val term = (msg["term"] as? Number)?.toInt() ?: 0
         val leaderId = msg["leader_id"]
+        val leaderCommit = (msg["leader_commit"] as? Number)?.toInt() ?: -1
 
         synchronized(lock) {
             if (term >= currentTerm) {
@@ -283,6 +301,22 @@ class RaftNode(
                     val lHost = leaderId[0] as? String ?: ""
                     val lPort = (leaderId[1] as? Number)?.toInt() ?: 0
                     leader = LeaderInfo(lHost, lPort)
+                }
+
+                // Append entries if present
+                @Suppress("UNCHECKED_CAST")
+                val entries = msg["entries"] as? List<Map<String, Any?>> ?: emptyList()
+                for (entry in entries) {
+                    val entryTerm = (entry["term"] as? Number)?.toInt() ?: 0
+                    @Suppress("UNCHECKED_CAST")
+                    val cmd = entry["command"] as? Map<String, Any?> ?: emptyMap()
+                    log.add(LogEntry(entryTerm, cmd))
+                }
+
+                // Update commit index
+                if (leaderCommit > commitIndex) {
+                    commitIndex = minOf(leaderCommit, log.size - 1)
+                    applyCommitted()
                 }
 
                 resetElectionTimeout()
