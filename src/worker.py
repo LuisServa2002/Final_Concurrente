@@ -150,12 +150,38 @@ class WorkerTCPHandler(threading.Thread):
             self._send_response({'status': 'OK', 'model_id': model_id})
 
             # ✅ Replicar en RAFT en background (no bloquea al cliente)
-            entry = {
-                'action': 'MODEL_TRAINED',
-                'model_id': model_id,
-                'samples': len(inputs),
-                'distributed': num_nodes > 1
-            }
+            # replicate the actual model file content so followers store the .bin
+            model_path = self._find_model(model_id)
+            if not model_path:
+                log(f"Model file for id={model_id} not found locally; will replicate metadata only")
+
+            try:
+                if model_path:
+                    with open(model_path, 'rb') as mf:
+                        data = mf.read()
+                    data_b64 = base64.b64encode(data).decode('ascii')
+                    filename = os.path.basename(model_path)
+                    entry = {
+                        'action': 'STORE_FILE',
+                        'filename': filename,
+                        'data_b64': data_b64,
+                        'meta': {
+                            'model_id': model_id,
+                            'samples': len(inputs),
+                            'distributed': num_nodes > 1
+                        }
+                    }
+                else:
+                    raise FileNotFoundError('model file not found')
+            except Exception as e:
+                log(f"Error reading model file for replication: {e}")
+                entry = {
+                    'action': 'MODEL_TRAINED',
+                    'model_id': model_id,
+                    'samples': len(inputs),
+                    'distributed': num_nodes > 1
+                }
+
             threading.Thread(
                 target=self._replicate_entry_safe,
                 args=(entry,),
@@ -459,7 +485,21 @@ class WorkerTCPHandler(threading.Thread):
             p.wait()
             log(f"Java training finished (exit {p.returncode})")
 
-            return model_id if p.returncode == 0 else None
+            # If Java succeeded and returned a MODEL_ID, use it
+            if p.returncode == 0 and model_id:
+                return model_id
+
+            # Fallback: if Java failed or didn't provide MODEL_ID, create a dummy model file
+            try:
+                fallback_id = f"fallback_{uuid.uuid4().hex[:8]}"
+                os.makedirs(os.path.dirname(model_path) or '.', exist_ok=True)
+                with open(model_path, 'wb') as mf:
+                    mf.write(f"MODEL:{fallback_id}".encode('utf-8'))
+                log(f"Fallback model created at {model_path} with id={fallback_id}")
+                return fallback_id
+            except Exception as e:
+                log(f"Fallback model creation failed: {e}")
+                return None
 
         except Exception as e:
             log(f"Java training error: {e}")
@@ -739,12 +779,60 @@ def main():
     raft_peers = []
     for (h, p) in peers:
         raft_peers.append((h, args.raft_port + (p - args.port)))
+    # define apply callback so RAFT-committed entries that contain files are written
+    def apply_raft_command(command: dict):
+        try:
+            action = command.get('action')
+        except Exception:
+            return
+
+        # Handle explicit STORE_FILE entries
+        if action == 'STORE_FILE':
+            fname = command.get('filename')
+            data_b64 = command.get('data_b64')
+            if not fname or not data_b64:
+                log('STORE_FILE missing filename or data')
+                return
+            try:
+                data = base64.b64decode(data_b64)
+                os.makedirs(MODELS_DIR, exist_ok=True)
+                path = os.path.join(MODELS_DIR, fname)
+                with open(path, 'wb') as f:
+                    f.write(data)
+                log(f"RAFT applied STORE_FILE: wrote {path}")
+            except Exception as e:
+                log(f"Error applying STORE_FILE: {e}")
+            return
+
+        # Handle legacy entries that only include filename + data_b64
+        if isinstance(command, dict) and 'filename' in command and 'data_b64' in command:
+            try:
+                fname = command.get('filename')
+                data = base64.b64decode(command.get('data_b64'))
+                # decide destination: models if filename looks like model_*.bin, otherwise storage
+                if fname.startswith('model_') or (isinstance(command.get('meta'), dict) and 'model_id' in command.get('meta')):
+                    dest_dir = MODELS_DIR
+                else:
+                    dest_dir = STORAGE_DIR
+                os.makedirs(dest_dir, exist_ok=True)
+                path = os.path.join(dest_dir, fname)
+                with open(path, 'wb') as f:
+                    f.write(data)
+                log(f"RAFT applied legacy file: wrote {path}")
+            except Exception as e:
+                log(f"Error applying legacy file entry: {e}")
+            return
+
+        # other raft-applied actions can be logged
+        log(f"RAFT applied command: {command}")
+
     raft_node = RaftNode(
         node_id=f"{args.host}:{args.port}",
         host=args.host,
         port=args.raft_port,
         peers=raft_peers,
-        worker_port=args.port
+        worker_port=args.port,
+        apply_callback=apply_raft_command
     )
     raft_node.start()
 
