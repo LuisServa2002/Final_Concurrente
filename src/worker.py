@@ -137,10 +137,10 @@ class WorkerTCPHandler(threading.Thread):
 
             if num_nodes > 1:
                 log(f"Starting DISTRIBUTED training across {num_nodes} nodes")
-                model_id = self._distributed_train(inputs, outputs, num_nodes)
+                model_id, model_path = self._distributed_train(inputs, outputs, num_nodes)
             else:
                 log(f"Starting SINGLE-NODE training (no peers available)")
-                model_id = self._single_node_train(inputs, outputs)
+                model_id, model_path = self._single_node_train(inputs, outputs)
 
             if not model_id:
                 self._send_response({'status': 'ERROR', 'message': 'Training failed'})
@@ -151,7 +151,6 @@ class WorkerTCPHandler(threading.Thread):
 
             # ✅ Replicar en RAFT en background (no bloquea al cliente)
             # replicate the actual model file content so followers store the .bin
-            model_path = self._find_model(model_id)
             if not model_path:
                 log(f"Model file for id={model_id} not found locally; will replicate metadata only")
 
@@ -255,9 +254,7 @@ class WorkerTCPHandler(threading.Thread):
         
         # Aggregate: Train final model with ALL data combined
         # (This is simpler than averaging weights)
-        final_model_id = self._aggregate_train(inputs, outputs)
-        
-        return final_model_id
+        return self._aggregate_train(inputs, outputs)
 
     def _split_data(self, inputs, outputs, num_chunks):
         """
@@ -392,7 +389,9 @@ class WorkerTCPHandler(threading.Thread):
         return self._single_node_train(inputs, outputs)
 
     def _single_node_train(self, inputs, outputs):
-        """Train a model on a single node (original behavior)."""
+        """Train a model on a single node (original behavior).
+        Returns tuple (model_id, model_path) or (None, None) on failure.
+        """
         os.makedirs(self.models_dir, exist_ok=True)
         
         train_id = str(uuid.uuid4())[:8]
@@ -424,7 +423,10 @@ class WorkerTCPHandler(threading.Thread):
         except:
             pass
 
-        return model_id
+        if model_id:
+            return (model_id, model_path)
+        return (None, None)
+
 
     def _handle_sub_train(self, msg):
         """
@@ -830,8 +832,10 @@ def main():
         port=args.raft_port,
         peers=raft_peers,
         worker_port=args.port,
-        apply_callback=apply_raft_command
+        apply_callback=apply_raft_command,
+        persistence_path=STORAGE_DIR
     )
+
     raft_node.start()
 
     log(f"Worker started with DISTRIBUTED TRAINING support")

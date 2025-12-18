@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"sync"
 	"time"
 )
+
 
 // Global state
 var (
@@ -90,7 +92,44 @@ func main() {
 	// Initialize RAFT node
 	nodeID := fmt.Sprintf("%s:%d", *host, *port)
 	raftNode = NewRaftNode(nodeID, *host, *raftPort, peers, *port)
+
+	// Set callback to apply committed entries (for .bin file replication)
+	raftNode.SetApplyCallback(func(cmd map[string]interface{}) {
+		action, _ := cmd["action"].(string)
+		
+		// Handle STORE_FILE entries
+		if action == "STORE_FILE" {
+			filename, _ := cmd["filename"].(string)
+			dataB64, _ := cmd["data_b64"].(string)
+			
+			if filename == "" || dataB64 == "" {
+				logMsg("RAFT STORE_FILE: missing filename or data")
+				return
+			}
+			
+			data, err := base64.StdEncoding.DecodeString(dataB64)
+			if err != nil {
+				logMsg("RAFT STORE_FILE: base64 decode error: %v", err)
+				return
+			}
+			
+			path := filepath.Join(modelsDir, filename)
+			if err := os.WriteFile(path, data, 0644); err != nil {
+				logMsg("RAFT STORE_FILE: write error: %v", err)
+				return
+			}
+			
+		logMsg("RAFT applied STORE_FILE: wrote %s (%d bytes)", path, len(data))
+		} else {
+			logMsg("RAFT applied command: %v", cmd)
+		}
+	})
+
+	// Set persistence path for RAFT state
+	raftNode.SetPersistencePath(storageDir)
+
 	go raftNode.Start()
+
 
 	logMsg("Worker started: host=%s, port=%d, raft_port=%d", *host, *port, *raftPort)
 	logMsg("Storage: %s, Models: %s", storageDir, modelsDir)
@@ -101,6 +140,7 @@ func main() {
 
 	// Start TCP server (blocking)
 	startTCPServer(*host, *port)
+
 }
 
 func logMsg(format string, args ...interface{}) {
@@ -162,6 +202,8 @@ func handleConnection(conn net.Conn) {
 	switch msgType {
 	case "TRAIN":
 		handleTrain(conn, msg)
+	case "SUB_TRAIN":
+		handleSubTrain(conn, msg)
 	case "PREDICT":
 		handlePredict(conn, msg)
 	case "LIST_MODELS":
@@ -170,6 +212,7 @@ func handleConnection(conn net.Conn) {
 		sendResponse(conn, map[string]interface{}{"status": "ERROR", "message": "Unknown type"})
 	}
 }
+
 
 func sendResponse(conn net.Conn, resp map[string]interface{}) {
 	data, _ := json.Marshal(resp)
@@ -245,6 +288,54 @@ func handleTrain(conn net.Conn, msg map[string]interface{}) {
 		sendResponse(conn, map[string]interface{}{"status": "ERROR", "message": "Training failed"})
 	}
 }
+
+// handleSubTrain handles distributed training sub-requests from leader
+func handleSubTrain(conn net.Conn, msg map[string]interface{}) {
+	inputsRaw, _ := msg["inputs"].([]interface{})
+	outputsRaw, _ := msg["outputs"].([]interface{})
+	chunkID, _ := msg["chunk_id"].(float64)
+
+	if len(inputsRaw) == 0 || len(outputsRaw) == 0 {
+		sendResponse(conn, map[string]interface{}{"status": "ERROR", "message": "Missing inputs or outputs"})
+		return
+	}
+
+	logMsg("SUB_TRAIN request: chunk %d, %d samples", int(chunkID), len(inputsRaw))
+
+	// Generate training ID for this chunk
+	trainID := fmt.Sprintf("%d_chunk%d", time.Now().UnixNano()%100000000, int(chunkID))
+
+	// Write CSV files
+	inputsFile := filepath.Join(modelsDir, fmt.Sprintf("inputs_%s.csv", trainID))
+	outputsFile := filepath.Join(modelsDir, fmt.Sprintf("outputs_%s.csv", trainID))
+	modelPath := filepath.Join(modelsDir, fmt.Sprintf("model_%s.bin", trainID))
+
+	if err := writeCSV(inputsFile, inputsRaw); err != nil {
+		sendResponse(conn, map[string]interface{}{"status": "ERROR", "message": err.Error()})
+		return
+	}
+	if err := writeCSV(outputsFile, outputsRaw); err != nil {
+		sendResponse(conn, map[string]interface{}{"status": "ERROR", "message": err.Error()})
+		return
+	}
+
+	logMsg("SUB_TRAIN data saved: %s, %s", inputsFile, outputsFile)
+
+	// Run Java training
+	modelID := runJavaTraining(inputsFile, outputsFile, modelPath)
+
+	// Cleanup temp files
+	os.Remove(inputsFile)
+	os.Remove(outputsFile)
+
+	if modelID != "" {
+		logMsg("SUB_TRAIN complete: model_id=%s", modelID)
+		sendResponse(conn, map[string]interface{}{"status": "OK", "model_id": modelID, "model_path": modelPath})
+	} else {
+		sendResponse(conn, map[string]interface{}{"status": "ERROR", "message": "Training failed"})
+	}
+}
+
 
 func handlePredict(conn net.Conn, msg map[string]interface{}) {
 	modelID, _ := msg["model_id"].(string)

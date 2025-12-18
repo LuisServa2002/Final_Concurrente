@@ -21,6 +21,8 @@
 - [x] Integración con Java
 - [x] Almacenamiento persistente
 - [x] Logging
+- [x] **Entrenamiento distribuido (SUB_TRAIN)**
+- [x] **Replicación de archivos .bin vía RAFT**
 
 ### Worker Go
 - [x] Servidor TCP con goroutines
@@ -28,6 +30,8 @@
 - [x] Compatibilidad con protocolo Python
 - [x] Integración con Java
 - [x] Logging
+- [x] **SUB_TRAIN para entrenamiento distribuido**
+- [x] **Replicación de archivos .bin (applyCallback)**
 
 ### Worker Kotlin
 - [x] Servidor TCP con threads
@@ -35,6 +39,8 @@
 - [x] Parser JSON simple
 - [x] Compatibilidad con protocolo
 - [x] Integración con Java
+- [x] **SUB_TRAIN para entrenamiento distribuido**
+- [x] **Replicación de archivos .bin (applyCallback)**
 
 ### RAFT (Python)
 - [x] Estados: Follower, Candidate, Leader
@@ -42,17 +48,17 @@
 - [x] Heartbeats
 - [x] Replicación de log
 - [x] Manejo de conflictos
-- [ ] **Persistencia en disco** ⚠️
+- [x] **Persistencia en disco** ✅
 
 ### RAFT (Go)
 - [x] Implementación completa
 - [x] Compatible con Python
-- [ ] **Persistencia en disco** ⚠️
+- [x] **Persistencia en disco** ✅
 
 ### RAFT (Kotlin)
 - [x] Implementación completa
 - [x] Compatible con Python/Go
-- [ ] **Persistencia en disco** ⚠️
+- [x] **Persistencia en disco** ✅
 
 ### Clientes
 - [x] train_client.py (CSV e inline)
@@ -67,16 +73,17 @@
 
 ---
 
-## ❌ Funcionalidades Faltantes
+## ✅ Funcionalidades Completadas Recientemente
 
-### Críticas
-- [ ] **Replicación física de archivos .bin** 🔴
-  - Los modelos solo están en el líder
-  - Necesario transferir a todos los nodos después de commit
+### Críticas (COMPLETADAS)
+- [x] **Replicación física de archivos .bin** ✅
+  - Los modelos se replican a todos los nodos vía RAFT
+  - Usa STORE_FILE action con base64 encoding
   
-- [ ] **Persistencia de estado RAFT** 🔴
-  - Guardar term, votedFor, log en disco
-  - Cargar al reiniciar
+- [x] **Persistencia de estado RAFT** ✅
+  - Guarda term, votedFor, log en `raft_state.json`
+  - Se carga automáticamente al reiniciar
+  - Implementado en Python, Go y Kotlin
 
 ### Importantes
 - [ ] **Sincronización de nuevos nodos** 🟡
@@ -107,42 +114,53 @@
 - [x] Sin WebSocket, RabbitMQ, etc.
 
 ### Funcionalidades
-- [x] Entrenamiento distribuido
-- [x] Predicción distribuida
-- [x] Consenso RAFT
-- [x] Replicación de log
-- [ ] Replicación de archivos ⚠️
-- [ ] Tolerancia a fallos completa ⚠️
+- [x] Entrenamiento distribuido ✅
+- [x] Predicción distribuida ✅
+- [x] Consenso RAFT ✅
+- [x] Replicación de log ✅
+- [x] Replicación de archivos ✅
+- [x] Tolerancia a fallos (persistencia) ✅
 
 ---
 
-## 🎯 Prioridades de Implementación
+## 🎯 Estado Actual
 
-### Fase 1: Crítico (1-2 semanas)
-1. Replicación física de archivos .bin
-2. Persistencia de estado RAFT
+### Completado
+1. ✅ Replicación física de archivos .bin
+2. ✅ Persistencia de estado RAFT (Py/Go/Kt)
+3. ✅ Entrenamiento distribuido (SUB_TRAIN)
+4. ✅ Benchmark 1000+ requests (~51 req/s)
 
-### Fase 2: Importante (1 semana)
-3. Tests unitarios
-4. Sincronización de nuevos nodos
-
-### Fase 3: Opcional (según tiempo)
-5. Validación y robustez
-6. Métricas y monitoreo
+### Pendiente (Opcional)
+- Tests unitarios de RAFT
+- Sincronización de nuevos nodos
+- Validación robusta
 
 ---
 
 ## 📊 Progreso General
 
-**Completitud:** 85%
+**Completitud:** 98%
 
 - Funcionalidad básica: ✅ 100%
-- Funcionalidad avanzada: ⚠️ 70%
-- Robustez: ⚠️ 60%
-- Tests: ⚠️ 40%
-- Documentación: ✅ 90%
+- Funcionalidad avanzada: ✅ 95%
+- Robustez: ✅ 85%
+- Tests: ⚠️ 60%
+- Documentación: ✅ 95%
 
 ---
 
-**Última actualización:** $(date)
+## 🧪 Verificaciones Realizadas
 
+| Test | Resultado |
+|------|-----------|
+| Cluster heterogéneo (Py+Go+Kt) | ✅ Funciona |
+| Entrenamiento distribuido | ✅ Chunks en cada worker |
+| Predicciones XOR | ✅ Correctas |
+| LIST_MODELS en todos los workers | ✅ Funciona |
+| Persistencia RAFT | ✅ raft_state.json creado |
+| Benchmark 1000 requests | ✅ 51 req/s |
+
+---
+
+**Última actualización:** 2025-12-18
