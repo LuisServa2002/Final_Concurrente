@@ -117,6 +117,7 @@ fun handleConnection(client: Socket) {
 
         when (type) {
             "TRAIN" -> handleTrain(msg, writer)
+            "SUB_TRAIN" -> handleSubTrain(msg, writer)
             "PREDICT" -> handlePredict(msg, writer)
             "LIST_MODELS" -> handleListModels(writer)
             else -> sendResponse(writer, mapOf("status" to "ERROR", "message" to "Unknown type: $type"))
@@ -186,6 +187,48 @@ fun handleTrain(msg: Map<String, Any?>, writer: PrintWriter) {
         // Replicate via RAFT
         raftNode.replicate(mapOf("action" to "MODEL_TRAINED", "model_id" to modelId))
         sendResponse(writer, mapOf("status" to "OK", "model_id" to modelId))
+    } else {
+        sendResponse(writer, mapOf("status" to "ERROR", "message" to "Training failed"))
+    }
+}
+
+// handleSubTrain handles distributed training sub-requests from leader
+fun handleSubTrain(msg: Map<String, Any?>, writer: PrintWriter) {
+    @Suppress("UNCHECKED_CAST")
+    val inputs = msg["inputs"] as? List<List<Double>> ?: emptyList()
+    @Suppress("UNCHECKED_CAST")
+    val outputs = msg["outputs"] as? List<Any> ?: emptyList()
+    val chunkId = (msg["chunk_id"] as? Number)?.toInt() ?: 0
+
+    if (inputs.isEmpty() || outputs.isEmpty()) {
+        sendResponse(writer, mapOf("status" to "ERROR", "message" to "Missing inputs or outputs"))
+        return
+    }
+
+    log("SUB_TRAIN request: chunk $chunkId, ${inputs.size} samples")
+
+    // Generate training ID for this chunk
+    val trainId = "${System.currentTimeMillis() % 100000000}_chunk$chunkId"
+    val inputsFile = "$modelsDir/inputs_$trainId.csv"
+    val outputsFile = "$modelsDir/outputs_$trainId.csv"
+    val modelPath = "$modelsDir/model_$trainId.bin"
+
+    // Write CSV files
+    writeCsv(inputsFile, inputs)
+    writeCsvAny(outputsFile, outputs)
+
+    log("SUB_TRAIN data saved: $inputsFile, $outputsFile")
+
+    // Run Java training
+    val modelId = runJavaTraining(inputsFile, outputsFile, modelPath)
+
+    // Cleanup
+    File(inputsFile).delete()
+    File(outputsFile).delete()
+
+    if (modelId != null) {
+        log("SUB_TRAIN complete: model_id=$modelId")
+        sendResponse(writer, mapOf("status" to "OK", "model_id" to modelId, "model_path" to modelPath))
     } else {
         sendResponse(writer, mapOf("status" to "ERROR", "message" to "Training failed"))
     }
