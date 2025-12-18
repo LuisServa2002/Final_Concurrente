@@ -58,26 +58,28 @@ Abrir 3 terminales y ejecutar:
 
 ### Terminal 1: Worker Python (puerto 9000)
 ```bash
-python3 -m src.worker \
-  --host 127.0.0.1 --port 9000 \
-  --monitor-port 8000 --raft-port 10000 \
-  --peers 127.0.0.1:9001 127.0.0.1:9002 \
+python -m src.worker 
+  --host 127.0.0.1 --port 9000 
+  --monitor-port 8000 --raft-port 10000 
+  --peers 127.0.0.1:9001 127.0.0.1:9002 
   --storage-dir node0_storage
 ```
 
 ### Terminal 2: Worker Go (puerto 9001)
 ```bash
-./go/worker \
-  --host 127.0.0.1 --port 9001 \
-  --monitor-port 8001 --raft-port 10001 \
+go build -o worker.exe .
+
+./go/worker.exe 
+  --host 127.0.0.1 --port 9001 
+  --monitor-port 8001 --raft-port 10001 
   --peers 127.0.0.1:9000,127.0.0.1:9002
 ```
 
 ### Terminal 3: Worker Kotlin (puerto 9002)
 ```bash
-java -jar kotlin/worker.jar \
-  --host 127.0.0.1 --port 9002 \
-  --monitor-port 8002 --raft-port 10002 \
+java -jar kotlin/worker.jar 
+  --host 127.0.0.1 --port 9002 
+  --monitor-port 8002 --raft-port 10002 
   --peers 127.0.0.1:9000,127.0.0.1:9001
 ```
 
@@ -89,25 +91,22 @@ java -jar kotlin/worker.jar \
 
 ### Entrenar un modelo (ejemplo XOR)
 ```bash
-python3 -m src.train_client --host 127.0.0.1 --port 9000 \
-  train-inline "0,0;0,1;1,0;1,1" "0;1;1;0"
+python -m src.train_client --host 127.0.0.1 --port 9000 train-inline "0,0;0,1;1,0;1,1" "0;1;1;0"
 ```
 
 ### Entrenar desde archivos CSV
 ```bash
-python3 -m src.train_client --host 127.0.0.1 --port 9000 \
-  train inputs.csv outputs.csv
+python -m src.train_client --host 127.0.0.1 --port 9000 train inputs.csv outputs.csv
 ```
 
 ### Listar modelos disponibles
 ```bash
-python3 -m src.test_client --host 127.0.0.1 --port 9000 list
+python -m src.test_client --host 127.0.0.1 --port 9000 list
 ```
 
 ### Hacer predicción
 ```bash
-python3 -m src.test_client --host 127.0.0.1 --port 9000 \
-  predict <model_id> "1,0"
+python -m src.test_client --host 127.0.0.1 --port 9000 predict <model_id> "1,0"
 ```
 
 ---

@@ -93,10 +93,21 @@ Open http://127.0.0.1:8000/logs in a browser to see replication logs.
 
 Para un análisis completo del proyecto, mejoras sugeridas y guías detalladas, consulta:
 
-- **[Verificación de Requisitos del PDF](docs/VERIFICACION_REQUISITOS_PDF.md)** ⭐ - Análisis de cumplimiento según el enunciado
-- **[Análisis Completo del Proyecto](docs/ANALISIS_PROYECTO.md)** - Análisis exhaustivo, mejoras y funcionalidades faltantes
-- **[Resumen Ejecutivo](docs/RESUMEN_EJECUTIVO.md)** - Resumen rápido del estado actual
-- **[Checklist del Proyecto](docs/CHECKLIST_PROYECTO.md)** - Lista de verificación de componentes
-- **[Flujo de Ejecución](docs/EXECUTION_FLOW.md)** - Guía paso a paso para ejecutar el sistema
+- **[Guía Completa de Ejecución](docs/GUIA_EJECUCION_COMPLETA.md)** - Guía paso a paso con 3 workers (Python, Go, Kotlin) e imágenes
+- **[Flujo de Ejecución](docs/EXECUTION_FLOW.md)** - Flujo básico de ejecución
 - **[Contexto Técnico](docs/TECHNICAL_CONTEXT.md)** - Arquitectura y diseño del sistema
+
+## 🖼️ Entrenamiento con Imágenes
+
+Para entrenar modelos usando imágenes reales:
+
+```powershell
+# Convertir imagen a vectores CSV
+python tools\image_to_csv.py --image Fases.png --output inputs_img.csv outputs_img.csv
+
+# Entrenar con los vectores generados
+python -m src.train_client --host 127.0.0.1 --port 9000 train inputs_img.csv outputs_img.csv
+```
+
+Ver [Guía Completa de Ejecución](docs/GUIA_EJECUCION_COMPLETA.md) para más detalles.
 
