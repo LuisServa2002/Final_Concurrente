@@ -195,8 +195,6 @@ class WorkerTCPHandler(threading.Thread):
             log(f"TRAIN handler error: {e}")
             self._send_response({'status': 'ERROR', 'message': str(e)})
 
-
-
     def _replicate_entry_safe(self, entry):
         try:
             log(f"Replicating entry via RAFT: {entry}")

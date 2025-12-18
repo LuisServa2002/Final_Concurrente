@@ -259,3 +259,5 @@ Con estas dos implementaciones, el proyecto cumpliría **100% con los requisitos
 
 **Última actualización:** Basado en análisis del PDF `Final_cc4P1-252_v03.pdf` y la imagen `Fases.png`
 
+
+
