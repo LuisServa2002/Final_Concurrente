@@ -16,7 +16,7 @@ APPEND_RESPONSE = 'APPEND_RESPONSE'
 
 
 class RaftNode:
-    def __init__(self, node_id: str, host: str, port: int, peers: List[Tuple[str,int]], worker_port: int = None):
+    def __init__(self, node_id: str, host: str, port: int, peers: List[Tuple[str,int]], worker_port: int = None, apply_callback=None):
         self.id = node_id
         self.host = host
         self.port = port
@@ -44,6 +44,9 @@ class RaftNode:
         self.election_timer = None
         self.heartbeat_interval = 1.0
         self.stopped = False
+
+        # callback to apply committed log entries to state machine
+        self.apply_callback = apply_callback
 
         # server thread
         self.server_thread = threading.Thread(target=self._serve, daemon=True)
@@ -221,6 +224,12 @@ class RaftNode:
                 if leader_commit > self.commit_index:
                     self.commit_index = min(leader_commit, len(self.log) - 1)
 
+                # apply committed entries to state machine if callback provided
+                try:
+                    self._apply_committed()
+                except Exception:
+                    pass
+
                 self.reset_election_timeout()
                 return {'type': APPEND_RESPONSE, 'term': self.current_term, 'success': True, 'last_index': len(self.log) - 1}
             else:
@@ -327,8 +336,38 @@ class RaftNode:
                     count += 1
             if count >= majority and self.log[my_index]['term'] == self.current_term:
                 self.commit_index = my_index
+                # apply committed entries locally
+                try:
+                    self._apply_committed()
+                except Exception:
+                    pass
                 return True
             return False
+
+    def _apply_committed(self):
+        """Apply entries from last_applied+1..commit_index using apply_callback."""
+        if not self.apply_callback:
+            self.last_applied = self.commit_index
+            return
+
+        # apply in-order
+        while self.last_applied < self.commit_index:
+            self.last_applied += 1
+            entry = None
+            try:
+                entry = self.log[self.last_applied]
+            except Exception:
+                continue
+            try:
+                cmd = entry.get('command') if isinstance(entry, dict) else None
+                if cmd is not None:
+                    # call outside lock to avoid deadlocks
+                    try:
+                        self.apply_callback(cmd)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
 
 class NotLeader(Exception):
