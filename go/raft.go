@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
+
 
 // RAFT message types
 const (
@@ -70,6 +73,12 @@ type RaftNode struct {
 
 	// Configuration
 	heartbeatInterval time.Duration
+
+	// Callback for applying committed entries
+	applyCallback func(map[string]interface{})
+
+	// Persistence
+	persistencePath string
 }
 
 // NewRaftNode creates a new RAFT node
@@ -95,11 +104,85 @@ func NewRaftNode(id, host string, port int, peers []Peer, workerPort int) *RaftN
 
 // Start begins the RAFT node operation
 func (rn *RaftNode) Start() {
+	// Load persisted state if available
+	rn.loadState()
+	
 	// Start RPC server
 	go rn.startRPCServer()
 
 	// Start election timer
 	rn.resetElectionTimeout()
+}
+
+// SetPersistencePath sets the directory for RAFT state persistence
+func (rn *RaftNode) SetPersistencePath(path string) {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.persistencePath = path
+}
+
+// saveState persists current term, votedFor, and log to disk
+func (rn *RaftNode) saveState() {
+	if rn.persistencePath == "" {
+		return
+	}
+	
+	stateFile := filepath.Join(rn.persistencePath, "raft_state.json")
+	os.MkdirAll(rn.persistencePath, 0755)
+	
+	state := map[string]interface{}{
+		"current_term": rn.currentTerm,
+		"voted_for":    rn.votedFor,
+		"log":          rn.log,
+	}
+	
+	data, err := json.Marshal(state)
+	if err != nil {
+		logMsg("RAFT: Error marshaling state: %v", err)
+		return
+	}
+	
+	// Atomic write using temp file
+	tempFile := stateFile + ".tmp"
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		logMsg("RAFT: Error writing state: %v", err)
+		return
+	}
+	if err := os.Rename(tempFile, stateFile); err != nil {
+		logMsg("RAFT: Error renaming state file: %v", err)
+	}
+}
+
+// loadState loads persisted state from disk
+func (rn *RaftNode) loadState() {
+	if rn.persistencePath == "" {
+		return
+	}
+	
+	stateFile := filepath.Join(rn.persistencePath, "raft_state.json")
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		return // File doesn't exist yet
+	}
+	
+	var state struct {
+		CurrentTerm int        `json:"current_term"`
+		VotedFor    string     `json:"voted_for"`
+		Log         []LogEntry `json:"log"`
+	}
+	
+	if err := json.Unmarshal(data, &state); err != nil {
+		logMsg("RAFT: Error loading state: %v", err)
+		return
+	}
+	
+	rn.mu.Lock()
+	rn.currentTerm = state.CurrentTerm
+	rn.votedFor = state.VotedFor
+	rn.log = state.Log
+	rn.mu.Unlock()
+	
+	logMsg("RAFT: Loaded state from disk (term=%d, log_len=%d)", state.CurrentTerm, len(state.Log))
 }
 
 // Stop halts the RAFT node
@@ -121,6 +204,27 @@ func (rn *RaftNode) GetLeader() *LeaderInfo {
 	return rn.leader
 }
 
+// SetApplyCallback sets the callback function for applying committed entries
+func (rn *RaftNode) SetApplyCallback(fn func(map[string]interface{})) {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.applyCallback = fn
+}
+
+// applyCommitted applies all committed but not yet applied entries
+func (rn *RaftNode) applyCommitted() {
+	for rn.lastApplied < rn.commitIndex {
+		rn.lastApplied++
+		if rn.lastApplied >= 0 && rn.lastApplied < len(rn.log) {
+			entry := rn.log[rn.lastApplied]
+			if rn.applyCallback != nil && entry.Command != nil {
+				// Call outside lock to avoid deadlocks
+				go rn.applyCallback(entry.Command)
+			}
+		}
+	}
+}
+
 // resetElectionTimeout resets the election timer with random timeout
 func (rn *RaftNode) resetElectionTimeout() {
 	if rn.electionTimer != nil {
@@ -137,6 +241,7 @@ func (rn *RaftNode) startElection() {
 	rn.state = "candidate"
 	rn.currentTerm++
 	rn.votedFor = rn.id
+	rn.saveState() // Persist term and vote
 	term := rn.currentTerm
 	votes := 1
 	rn.mu.Unlock()
@@ -270,8 +375,10 @@ func (rn *RaftNode) Replicate(command map[string]interface{}) bool {
 
 	entry := LogEntry{Term: rn.currentTerm, Command: command}
 	rn.log = append(rn.log, entry)
+	rn.saveState() // Persist log change
 	myIndex := len(rn.log) - 1
 	rn.mu.Unlock()
+
 
 	// Send to all peers
 	acks := 1
@@ -311,11 +418,13 @@ func (rn *RaftNode) Replicate(command map[string]interface{}) bool {
 
 	if acks >= majority {
 		rn.commitIndex = myIndex
+		rn.applyCommitted()
 		return true
 	}
 
 	return false
 }
+
 
 // ============================================================================
 // RPC Server and Client
@@ -388,16 +497,19 @@ func (rn *RaftNode) handleRequestVote(msg map[string]interface{}) map[string]int
 		rn.currentTerm = term
 		rn.votedFor = ""
 		rn.state = "follower"
+		rn.saveState() // Persist term change
 	}
 
 	voteGranted := false
 	if (rn.votedFor == "" || rn.votedFor == candidateID) && term >= rn.currentTerm {
 		rn.votedFor = candidateID
 		voteGranted = true
+		rn.saveState() // Persist vote
 		logMsg("Voted for %s in term %d", candidateID, term)
 	}
 
 	rn.resetElectionTimeout()
+
 
 	return map[string]interface{}{
 		"type":         VOTE_RESPONSE,
@@ -409,11 +521,16 @@ func (rn *RaftNode) handleRequestVote(msg map[string]interface{}) map[string]int
 func (rn *RaftNode) handleAppendEntries(msg map[string]interface{}) map[string]interface{} {
 	term := int(msg["term"].(float64))
 	leaderID := msg["leader_id"]
+	leaderCommit := -1
+	if lc, ok := msg["leader_commit"].(float64); ok {
+		leaderCommit = int(lc)
+	}
 
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
 	if term >= rn.currentTerm {
+		stateChanged := term > rn.currentTerm
 		rn.currentTerm = term
 		rn.state = "follower"
 
@@ -424,7 +541,41 @@ func (rn *RaftNode) handleAppendEntries(msg map[string]interface{}) map[string]i
 			rn.leader = &LeaderInfo{Host: host, WorkerPort: int(port)}
 		}
 
+		// Append entries if present
+		if entries, ok := msg["entries"].([]interface{}); ok && len(entries) > 0 {
+			for _, e := range entries {
+				if entryMap, ok := e.(map[string]interface{}); ok {
+					entryTerm := 0
+					if t, ok := entryMap["term"].(float64); ok {
+						entryTerm = int(t)
+					}
+					var cmd map[string]interface{}
+					if c, ok := entryMap["command"].(map[string]interface{}); ok {
+						cmd = c
+					}
+					rn.log = append(rn.log, LogEntry{Term: entryTerm, Command: cmd})
+					stateChanged = true
+				}
+			}
+		}
+
+		// Update commit index
+		if leaderCommit > rn.commitIndex {
+			if leaderCommit < len(rn.log)-1 {
+				rn.commitIndex = leaderCommit
+			} else {
+				rn.commitIndex = len(rn.log) - 1
+			}
+			rn.applyCommitted()
+		}
+
+		// Persist state if changed
+		if stateChanged {
+			rn.saveState()
+		}
+
 		rn.resetElectionTimeout()
+
 
 		return map[string]interface{}{
 			"type":    APPEND_RESPONSE,
@@ -439,6 +590,7 @@ func (rn *RaftNode) handleAppendEntries(msg map[string]interface{}) map[string]i
 		"success": false,
 	}
 }
+
 
 func (rn *RaftNode) sendRPC(host string, port int, msg map[string]interface{}) map[string]interface{} {
 	addr := fmt.Sprintf("%s:%d", host, port)
